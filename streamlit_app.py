@@ -6,7 +6,8 @@ import re
 import os
 from datetime import datetime, date, timedelta
 from io import BytesIO
-import streamlit_authenticator as stauth
+import hashlib
+import secrets
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -1708,150 +1709,127 @@ def page_export():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AUTHENTICATION
+# AUTHENTICATION  (zero external dependencies — hashlib + secrets + json only)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def init_users_yaml():
-    """Create users.yaml with a default admin account on first run."""
+def _hash_password(password: str, salt: str = None):
+    """PBKDF2-HMAC-SHA256 hash. Returns (salt, hash) both as hex strings."""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
+    return salt, key.hex()
+
+
+def _verify_password(password: str, salt: str, stored_hash: str) -> bool:
+    _, computed = _hash_password(password, salt)
+    return secrets.compare_digest(computed, stored_hash)
+
+
+def _load_users() -> dict:
+    """Load users.json; auto-create with default admin on first run."""
     if not os.path.exists(AUTH_YAML):
-        default_config = {
-            "credentials": {
-                "usernames": {
-                    "admin": {
-                        "name": "Administrator",
-                        "email": "admin@ca.com",
-                        "password": stauth.Hasher.hash("admin@123"),
-                        "role": "admin",
-                    }
-                }
-            },
-            "cookie": {
-                "name": "ca_client_master_auth",
-                "key": "ca_auth_secret_key_2024_xK9mP",
-                "expiry_days": 1,
-            },
+        salt, pw_hash = _hash_password("admin@123")
+        default = {
+            "admin": {
+                "name": "Administrator",
+                "email": "admin@ca.com",
+                "salt": salt,
+                "password": pw_hash,
+                "role": "admin",
+            }
         }
         with open(AUTH_YAML, "w") as f:
-            json.dump(default_config, f, indent=2)
-
-
-def load_authenticator():
-    """Load authenticator from users.yaml."""
+            json.dump(default, f, indent=2)
     with open(AUTH_YAML, "r") as f:
-        config = json.load(f)
-    authenticator = stauth.Authenticate(
-        config["credentials"],
-        config["cookie"]["name"],
-        config["cookie"]["key"],
-        config["cookie"]["expiry_days"],
-        auto_hash=False,
-    )
-    return authenticator, config
+        return json.load(f)
 
 
-def save_credentials(config: dict):
-    """Write updated credentials back to users.yaml."""
+def _save_users(users: dict):
     with open(AUTH_YAML, "w") as f:
-        json.dump(config, f, indent=2)
+        json.dump(users, f, indent=2)
 
 
+def _login_check(username: str, password: str, users: dict) -> bool:
+    u = users.get(username)
+    if not u:
+        return False
+    return _verify_password(password, u["salt"], u["password"])
+
+
+# ── Login page CSS ────────────────────────────────────────────────────────────
 def inject_login_css():
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Lato:wght@300;400;700&display=swap');
-
     html, body, [class*="css"] { font-family: 'Lato', sans-serif; }
-
-    .stApp { background: linear-gradient(135deg, #0f1923 0%, #1a2a3a 50%, #0f1923 100%); }
-
-    .login-card {
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(232,184,109,0.25);
-        border-radius: 12px;
-        padding: 40px 44px;
-        backdrop-filter: blur(12px);
-        box-shadow: 0 24px 64px rgba(0,0,0,0.5);
-    }
-    .login-logo {
-        text-align: center;
-        font-family: 'Playfair Display', serif;
-        font-size: 2.6rem;
-        font-weight: 700;
-        color: #e8b86d;
-        letter-spacing: 0.04em;
-        margin-bottom: 4px;
-    }
-    .login-sub {
-        text-align: center;
-        color: #7a9bb5;
-        font-size: 0.85rem;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        margin-bottom: 28px;
-    }
-    [data-testid="stForm"] {
-        background: transparent !important;
-        border: none !important;
-    }
-    .stTextInput label { color: #a8c4d8 !important; font-size: 0.82rem; letter-spacing: 0.08em; text-transform: uppercase; }
-    .stTextInput input {
-        background: rgba(255,255,255,0.06) !important;
-        border: 1px solid rgba(232,184,109,0.3) !important;
-        color: #e8ecf0 !important;
-        border-radius: 6px !important;
-    }
-    .stTextInput input:focus { border-color: #e8b86d !important; box-shadow: 0 0 0 2px rgba(232,184,109,0.15) !important; }
-    .stButton > button {
-        width: 100%;
-        background: linear-gradient(90deg, #e8b86d, #d4a054) !important;
-        color: #1a2a3a !important;
-        font-weight: 700 !important;
-        font-size: 0.95rem !important;
-        border: none !important;
-        border-radius: 6px !important;
-        padding: 12px 0 !important;
-        letter-spacing: 0.06em !important;
-        margin-top: 8px;
-        transition: all 0.2s !important;
-    }
-    .stButton > button:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 6px 20px rgba(232,184,109,0.3) !important; }
-    .login-hint {
-        text-align: center;
-        color: #4a6a80;
-        font-size: 0.75rem;
-        margin-top: 20px;
-        border-top: 1px solid rgba(255,255,255,0.06);
-        padding-top: 16px;
-    }
+    .stApp { background: linear-gradient(135deg, #0f1923 0%, #1a2a3a 50%, #0f1923 100%) !important; }
+    .login-wrap { max-width: 420px; margin: 6vh auto 0; padding: 40px 44px;
+        background: rgba(255,255,255,0.04); border: 1px solid rgba(232,184,109,0.25);
+        border-radius: 12px; backdrop-filter: blur(12px);
+        box-shadow: 0 24px 64px rgba(0,0,0,0.5); }
+    .login-logo { text-align:center; font-family:'Playfair Display',serif;
+        font-size:2.4rem; font-weight:700; color:#e8b86d; letter-spacing:0.04em; margin-bottom:4px; }
+    .login-sub  { text-align:center; color:#7a9bb5; font-size:0.82rem;
+        letter-spacing:0.12em; text-transform:uppercase; margin-bottom:28px; }
+    .login-hint { text-align:center; color:#4a6a80; font-size:0.74rem;
+        margin-top:18px; border-top:1px solid rgba(255,255,255,0.06); padding-top:14px; }
+    [data-testid="stForm"] { background:transparent !important; border:none !important; }
+    .stTextInput label { color:#a8c4d8 !important; font-size:0.8rem;
+        letter-spacing:0.08em; text-transform:uppercase; }
+    .stTextInput input { background:rgba(255,255,255,0.07) !important;
+        border:1px solid rgba(232,184,109,0.3) !important; color:#e8ecf0 !important;
+        border-radius:6px !important; }
+    .stTextInput input:focus { border-color:#e8b86d !important;
+        box-shadow:0 0 0 2px rgba(232,184,109,0.15) !important; }
+    .stButton > button { width:100%;
+        background:linear-gradient(90deg,#e8b86d,#d4a054) !important;
+        color:#1a2a3a !important; font-weight:700 !important; font-size:0.95rem !important;
+        border:none !important; border-radius:6px !important; padding:12px 0 !important;
+        letter-spacing:0.06em !important; margin-top:6px; }
+    .stButton > button:hover { filter:brightness(1.08);
+        box-shadow:0 6px 20px rgba(232,184,109,0.3) !important; }
     </style>
     """, unsafe_allow_html=True)
 
 
-def show_login_page(authenticator):
-    """Render a styled full-page login screen."""
+# ── Login page renderer ───────────────────────────────────────────────────────
+def show_login_page(users: dict):
     inject_login_css()
-    _, col, _ = st.columns([1, 1.4, 1])
-    with col:
-        st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<div class="login-logo">⚖️ CA Client Master</div>', unsafe_allow_html=True)
-        st.markdown('<div class="login-sub">Chartered Accountant Practice Manager</div>', unsafe_allow_html=True)
-        authenticator.login(location="main", fields={"Form name": "", "Username": "Username", "Password": "Password", "Login": "Sign In"})
-        st.markdown('<div class="login-hint">🔒 Secure — runs entirely on localhost</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="login-logo">⚖️ CA Client Master</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-sub">Chartered Accountant Practice Manager</div>', unsafe_allow_html=True)
+
+    with st.form("login_form", clear_on_submit=False):
+        uname = st.text_input("Username")
+        pwd   = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In", use_container_width=True)
+
+    if submitted:
+        if _login_check(uname.strip(), pwd, users):
+            u = users[uname.strip()]
+            st.session_state["auth_ok"]   = True
+            st.session_state["auth_user"] = uname.strip()
+            st.session_state["auth_name"] = u["name"]
+            st.session_state["auth_role"] = u.get("role", "user")
+            st.rerun()
+        else:
+            st.error("❌ Incorrect username or password.")
+
+    st.markdown('<div class="login-hint">🔒 All data stored locally — no cloud sync</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
-def show_user_management(config: dict):
-    """Admin-only panel: add users, change passwords, delete users."""
+# ── User Management panel (admin only) ───────────────────────────────────────
+def show_user_management(users: dict):
     st.markdown('<div class="page-title">👥 User Management</div>', unsafe_allow_html=True)
-    users = config["credentials"]["usernames"]
 
-    # ── Current users table ───────────────────────────────────────────────────
+    # Current users table
     st.subheader("Current Users")
-    user_rows = [{"Username": u, "Name": v.get("name",""), "Email": v.get("email",""), "Role": v.get("role","user")}
-                 for u, v in users.items()]
-    st.dataframe(pd.DataFrame(user_rows), use_container_width=True, hide_index=True)
-
+    rows = [{"Username": u, "Name": v.get("name",""), "Email": v.get("email",""), "Role": v.get("role","user")}
+            for u, v in users.items()]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     st.markdown("---")
+
     tab_add, tab_pw, tab_del = st.tabs(["➕ Add User", "🔑 Change Password", "🗑️ Delete User"])
 
     # ── Add User ──────────────────────────────────────────────────────────────
@@ -1875,49 +1853,49 @@ def show_user_management(config: dict):
                 elif new_uname in users:
                     st.error(f"Username '{new_uname}' already exists.")
                 else:
-                    config["credentials"]["usernames"][new_uname] = {
-                        "name": new_name,
-                        "email": new_email,
-                        "password": stauth.Hasher.hash(new_pw),
-                        "role": new_role,
-                    }
-                    save_credentials(config)
-                    st.success(f"✅ User **{new_uname}** created successfully.")
+                    salt, pw_hash = _hash_password(new_pw)
+                    users[new_uname] = {"name": new_name, "email": new_email,
+                                        "salt": salt, "password": pw_hash, "role": new_role}
+                    _save_users(users)
+                    st.success(f"✅ User **{new_uname}** created.")
                     st.rerun()
 
     # ── Change Password ───────────────────────────────────────────────────────
     with tab_pw:
         with st.form("change_pw_form"):
-            target_user = st.selectbox("Select User", list(users.keys()))
-            new_pw1 = st.text_input("New Password *", type="password")
-            new_pw2 = st.text_input("Confirm New Password *", type="password")
+            target = st.selectbox("Select User", list(users.keys()))
+            pw1 = st.text_input("New Password *", type="password")
+            pw2 = st.text_input("Confirm New Password *", type="password")
             if st.form_submit_button("🔑 Update Password", use_container_width=True, type="primary"):
-                if not new_pw1:
+                if not pw1:
                     st.error("Password cannot be empty.")
-                elif new_pw1 != new_pw2:
+                elif pw1 != pw2:
                     st.error("Passwords do not match.")
-                elif len(new_pw1) < 6:
+                elif len(pw1) < 6:
                     st.error("Password must be at least 6 characters.")
                 else:
-                    config["credentials"]["usernames"][target_user]["password"] = stauth.Hasher.hash(new_pw1)
-                    save_credentials(config)
-                    st.success(f"✅ Password updated for **{target_user}**.")
+                    salt, pw_hash = _hash_password(pw1)
+                    users[target]["salt"]     = salt
+                    users[target]["password"] = pw_hash
+                    _save_users(users)
+                    st.success(f"✅ Password updated for **{target}**.")
 
     # ── Delete User ───────────────────────────────────────────────────────────
     with tab_del:
-        deletable = [u for u in users.keys() if u != st.session_state.get("username")]
+        me = st.session_state.get("auth_user", "")
+        deletable = [u for u in users if u != me]
         if not deletable:
             st.info("No other users to delete.")
         else:
             with st.form("del_user_form"):
                 del_user = st.selectbox("Select User to Delete", deletable)
-                confirm  = st.checkbox(f"I confirm I want to permanently delete user '{del_user}'")
+                confirm  = st.checkbox(f"I confirm I want to permanently delete '{del_user}'")
                 if st.form_submit_button("🗑️ Delete User", use_container_width=True):
                     if not confirm:
                         st.warning("Please tick the confirmation checkbox.")
                     else:
-                        del config["credentials"]["usernames"][del_user]
-                        save_credentials(config)
+                        del users[del_user]
+                        _save_users(users)
                         st.success(f"✅ User **{del_user}** deleted.")
                         st.rerun()
 
@@ -1962,52 +1940,48 @@ def main():
         page_export()
 
 
-if __name__ == "__main__":
-    # ── Bootstrap ─────────────────────────────────────────────────────────────
-    init_users_yaml()
-    authenticator, config = load_authenticator()
+# ─────────────────────────────────────────────────────────────────────────────
+# ENTRY POINT
+# ─────────────────────────────────────────────────────────────────────────────
+users = _load_users()
 
-    auth_status = st.session_state.get("authentication_status")
+if not st.session_state.get("auth_ok"):
+    show_login_page(users)
+    st.stop()
 
-    # ── Not logged in → show login page, halt ─────────────────────────────────
-    if not auth_status:
-        show_login_page(authenticator)
-        if st.session_state.get("authentication_status") is False:
-            st.error("❌ Incorrect username or password. Please try again.")
-        st.stop()
+# ── Authenticated ─────────────────────────────────────────────────────────────
+auth_name = st.session_state.get("auth_name", "User")
+auth_user = st.session_state.get("auth_user", "")
+auth_role = st.session_state.get("auth_role", "user")
 
-    # ── Logged in ─────────────────────────────────────────────────────────────
-    name     = st.session_state.get("name", "User")
-    username = st.session_state.get("username", "")
-    user_role = config["credentials"]["usernames"].get(username, {}).get("role", "user")
+# Sidebar user card + sign-out (renders before main()'s sidebar block)
+with st.sidebar:
+    st.markdown(f"""
+    <div style='background:rgba(232,184,109,0.1);border:1px solid rgba(232,184,109,0.3);
+    border-radius:8px;padding:10px 14px;margin-bottom:4px;'>
+        <div style='color:#e8b86d;font-size:0.72rem;letter-spacing:0.1em;
+                    text-transform:uppercase;'>Signed in as</div>
+        <div style='color:#d4e6f1;font-weight:700;font-size:0.92rem;
+                    margin-top:2px;'>👤 {auth_name}</div>
+        <div style='color:#5a7a96;font-size:0.74rem;'>{auth_user} · {auth_role}</div>
+    </div>
+    """, unsafe_allow_html=True)
+    if st.button("🚪 Sign Out", use_container_width=True, key="signout_btn"):
+        for k in ["auth_ok", "auth_user", "auth_name", "auth_role", "show_user_mgmt"]:
+            st.session_state.pop(k, None)
+        st.rerun()
+    if auth_role == "admin":
+        st.markdown("---")
+        if st.button("👥 Manage Users", use_container_width=True, key="btn_user_mgmt"):
+            st.session_state["show_user_mgmt"] = not st.session_state.get("show_user_mgmt", False)
 
-    # Sidebar: user identity card + logout (renders BEFORE main()'s sidebar block)
-    with st.sidebar:
-        st.markdown(f"""
-        <div style='background:rgba(232,184,109,0.1);border:1px solid rgba(232,184,109,0.3);
-        border-radius:8px;padding:10px 14px;margin-bottom:4px;'>
-            <div style='color:#e8b86d;font-size:0.72rem;letter-spacing:0.1em;
-                        text-transform:uppercase;'>Signed in as</div>
-            <div style='color:#d4e6f1;font-weight:700;font-size:0.92rem;
-                        margin-top:2px;'>👤 {name}</div>
-            <div style='color:#5a7a96;font-size:0.74rem;'>{username} · {user_role}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        authenticator.logout("🚪 Sign Out", location="sidebar", use_container_width=True)
-
-        # Admin-only toggle for User Management (appears above main nav divider)
-        if user_role == "admin":
-            st.markdown("---")
-            if st.button("👥 Manage Users", use_container_width=True, key="btn_user_mgmt"):
-                st.session_state["show_user_mgmt"] = not st.session_state.get("show_user_mgmt", False)
-
-    # ── Route to User Management or normal app ────────────────────────────────
-    if user_role == "admin" and st.session_state.get("show_user_mgmt", False):
-        inject_css()
-        init_db()
-        seed_sample_data()
-        if "delete_confirm" not in st.session_state:
-            st.session_state["delete_confirm"] = False
-        show_user_management(config)
-    else:
-        main()
+# Route: User Management (admin) or normal app
+if auth_role == "admin" and st.session_state.get("show_user_mgmt", False):
+    inject_css()
+    init_db()
+    seed_sample_data()
+    if "delete_confirm" not in st.session_state:
+        st.session_state["delete_confirm"] = False
+    show_user_management(users)
+else:
+    main()
