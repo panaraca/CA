@@ -6,6 +6,8 @@ import re
 import os
 from datetime import datetime, date, timedelta
 from io import BytesIO
+import yaml
+import streamlit_authenticator as stauth
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -21,6 +23,7 @@ st.set_page_config(
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
 DB_PATH = "ca_practice.db"
+AUTH_YAML = "users.yaml"
 
 INDIAN_STATES = [
     "Andaman and Nicobar Islands", "Andhra Pradesh", "Arunachal Pradesh",
@@ -1706,6 +1709,221 @@ def page_export():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AUTHENTICATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def init_users_yaml():
+    """Create users.yaml with a default admin account on first run."""
+    if not os.path.exists(AUTH_YAML):
+        default_config = {
+            "credentials": {
+                "usernames": {
+                    "admin": {
+                        "name": "Administrator",
+                        "email": "admin@ca.com",
+                        "password": stauth.Hasher.hash("admin@123"),
+                        "role": "admin",
+                    }
+                }
+            },
+            "cookie": {
+                "name": "ca_client_master_auth",
+                "key": "ca_auth_secret_key_2024_xK9mP",
+                "expiry_days": 1,
+            },
+        }
+        with open(AUTH_YAML, "w") as f:
+            yaml.dump(default_config, f, default_flow_style=False, allow_unicode=True)
+
+
+def load_authenticator():
+    """Load authenticator from users.yaml."""
+    with open(AUTH_YAML, "r") as f:
+        config = yaml.safe_load(f)
+    authenticator = stauth.Authenticate(
+        config["credentials"],
+        config["cookie"]["name"],
+        config["cookie"]["key"],
+        config["cookie"]["expiry_days"],
+        auto_hash=False,
+    )
+    return authenticator, config
+
+
+def save_credentials(config: dict):
+    """Write updated credentials back to users.yaml."""
+    with open(AUTH_YAML, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+
+
+def inject_login_css():
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Lato:wght@300;400;700&display=swap');
+
+    html, body, [class*="css"] { font-family: 'Lato', sans-serif; }
+
+    .stApp { background: linear-gradient(135deg, #0f1923 0%, #1a2a3a 50%, #0f1923 100%); }
+
+    .login-card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(232,184,109,0.25);
+        border-radius: 12px;
+        padding: 40px 44px;
+        backdrop-filter: blur(12px);
+        box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+    }
+    .login-logo {
+        text-align: center;
+        font-family: 'Playfair Display', serif;
+        font-size: 2.6rem;
+        font-weight: 700;
+        color: #e8b86d;
+        letter-spacing: 0.04em;
+        margin-bottom: 4px;
+    }
+    .login-sub {
+        text-align: center;
+        color: #7a9bb5;
+        font-size: 0.85rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        margin-bottom: 28px;
+    }
+    [data-testid="stForm"] {
+        background: transparent !important;
+        border: none !important;
+    }
+    .stTextInput label { color: #a8c4d8 !important; font-size: 0.82rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    .stTextInput input {
+        background: rgba(255,255,255,0.06) !important;
+        border: 1px solid rgba(232,184,109,0.3) !important;
+        color: #e8ecf0 !important;
+        border-radius: 6px !important;
+    }
+    .stTextInput input:focus { border-color: #e8b86d !important; box-shadow: 0 0 0 2px rgba(232,184,109,0.15) !important; }
+    .stButton > button {
+        width: 100%;
+        background: linear-gradient(90deg, #e8b86d, #d4a054) !important;
+        color: #1a2a3a !important;
+        font-weight: 700 !important;
+        font-size: 0.95rem !important;
+        border: none !important;
+        border-radius: 6px !important;
+        padding: 12px 0 !important;
+        letter-spacing: 0.06em !important;
+        margin-top: 8px;
+        transition: all 0.2s !important;
+    }
+    .stButton > button:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 6px 20px rgba(232,184,109,0.3) !important; }
+    .login-hint {
+        text-align: center;
+        color: #4a6a80;
+        font-size: 0.75rem;
+        margin-top: 20px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        padding-top: 16px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def show_login_page(authenticator):
+    """Render a styled full-page login screen."""
+    inject_login_css()
+    _, col, _ = st.columns([1, 1.4, 1])
+    with col:
+        st.markdown('<div class="login-card">', unsafe_allow_html=True)
+        st.markdown('<div class="login-logo">⚖️ CA Client Master</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-sub">Chartered Accountant Practice Manager</div>', unsafe_allow_html=True)
+        authenticator.login(location="main", fields={"Form name": "", "Username": "Username", "Password": "Password", "Login": "Sign In"})
+        st.markdown('<div class="login-hint">🔒 Secure — runs entirely on localhost</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
+def show_user_management(config: dict):
+    """Admin-only panel: add users, change passwords, delete users."""
+    st.markdown('<div class="page-title">👥 User Management</div>', unsafe_allow_html=True)
+    users = config["credentials"]["usernames"]
+
+    # ── Current users table ───────────────────────────────────────────────────
+    st.subheader("Current Users")
+    user_rows = [{"Username": u, "Name": v.get("name",""), "Email": v.get("email",""), "Role": v.get("role","user")}
+                 for u, v in users.items()]
+    st.dataframe(pd.DataFrame(user_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    tab_add, tab_pw, tab_del = st.tabs(["➕ Add User", "🔑 Change Password", "🗑️ Delete User"])
+
+    # ── Add User ──────────────────────────────────────────────────────────────
+    with tab_add:
+        with st.form("add_user_form"):
+            c1, c2 = st.columns(2)
+            new_uname = c1.text_input("Username *", placeholder="e.g. staff1")
+            new_name  = c2.text_input("Full Name *", placeholder="e.g. Priya Shah")
+            c1, c2 = st.columns(2)
+            new_email = c1.text_input("Email", placeholder="staff1@yourca.com")
+            new_role  = c2.selectbox("Role", ["user", "admin"])
+            new_pw    = st.text_input("Password *", type="password", placeholder="Min 6 characters")
+            new_pw2   = st.text_input("Confirm Password *", type="password")
+            if st.form_submit_button("➕ Create User", use_container_width=True, type="primary"):
+                if not new_uname or not new_name or not new_pw:
+                    st.error("Username, Full Name and Password are required.")
+                elif new_pw != new_pw2:
+                    st.error("Passwords do not match.")
+                elif len(new_pw) < 6:
+                    st.error("Password must be at least 6 characters.")
+                elif new_uname in users:
+                    st.error(f"Username '{new_uname}' already exists.")
+                else:
+                    config["credentials"]["usernames"][new_uname] = {
+                        "name": new_name,
+                        "email": new_email,
+                        "password": stauth.Hasher.hash(new_pw),
+                        "role": new_role,
+                    }
+                    save_credentials(config)
+                    st.success(f"✅ User **{new_uname}** created successfully.")
+                    st.rerun()
+
+    # ── Change Password ───────────────────────────────────────────────────────
+    with tab_pw:
+        with st.form("change_pw_form"):
+            target_user = st.selectbox("Select User", list(users.keys()))
+            new_pw1 = st.text_input("New Password *", type="password")
+            new_pw2 = st.text_input("Confirm New Password *", type="password")
+            if st.form_submit_button("🔑 Update Password", use_container_width=True, type="primary"):
+                if not new_pw1:
+                    st.error("Password cannot be empty.")
+                elif new_pw1 != new_pw2:
+                    st.error("Passwords do not match.")
+                elif len(new_pw1) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    config["credentials"]["usernames"][target_user]["password"] = stauth.Hasher.hash(new_pw1)
+                    save_credentials(config)
+                    st.success(f"✅ Password updated for **{target_user}**.")
+
+    # ── Delete User ───────────────────────────────────────────────────────────
+    with tab_del:
+        deletable = [u for u in users.keys() if u != st.session_state.get("username")]
+        if not deletable:
+            st.info("No other users to delete.")
+        else:
+            with st.form("del_user_form"):
+                del_user = st.selectbox("Select User to Delete", deletable)
+                confirm  = st.checkbox(f"I confirm I want to permanently delete user '{del_user}'")
+                if st.form_submit_button("🗑️ Delete User", use_container_width=True):
+                    if not confirm:
+                        st.warning("Please tick the confirmation checkbox.")
+                    else:
+                        del config["credentials"]["usernames"][del_user]
+                        save_credentials(config)
+                        st.success(f"✅ User **{del_user}** deleted.")
+                        st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
@@ -1746,4 +1964,51 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # ── Bootstrap ─────────────────────────────────────────────────────────────
+    init_users_yaml()
+    authenticator, config = load_authenticator()
+
+    auth_status = st.session_state.get("authentication_status")
+
+    # ── Not logged in → show login page, halt ─────────────────────────────────
+    if not auth_status:
+        show_login_page(authenticator)
+        if st.session_state.get("authentication_status") is False:
+            st.error("❌ Incorrect username or password. Please try again.")
+        st.stop()
+
+    # ── Logged in ─────────────────────────────────────────────────────────────
+    name     = st.session_state.get("name", "User")
+    username = st.session_state.get("username", "")
+    user_role = config["credentials"]["usernames"].get(username, {}).get("role", "user")
+
+    # Sidebar: user identity card + logout (renders BEFORE main()'s sidebar block)
+    with st.sidebar:
+        st.markdown(f"""
+        <div style='background:rgba(232,184,109,0.1);border:1px solid rgba(232,184,109,0.3);
+        border-radius:8px;padding:10px 14px;margin-bottom:4px;'>
+            <div style='color:#e8b86d;font-size:0.72rem;letter-spacing:0.1em;
+                        text-transform:uppercase;'>Signed in as</div>
+            <div style='color:#d4e6f1;font-weight:700;font-size:0.92rem;
+                        margin-top:2px;'>👤 {name}</div>
+            <div style='color:#5a7a96;font-size:0.74rem;'>{username} · {user_role}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        authenticator.logout("🚪 Sign Out", location="sidebar", use_container_width=True)
+
+        # Admin-only toggle for User Management (appears above main nav divider)
+        if user_role == "admin":
+            st.markdown("---")
+            if st.button("👥 Manage Users", use_container_width=True, key="btn_user_mgmt"):
+                st.session_state["show_user_mgmt"] = not st.session_state.get("show_user_mgmt", False)
+
+    # ── Route to User Management or normal app ────────────────────────────────
+    if user_role == "admin" and st.session_state.get("show_user_mgmt", False):
+        inject_css()
+        init_db()
+        seed_sample_data()
+        if "delete_confirm" not in st.session_state:
+            st.session_state["delete_confirm"] = False
+        show_user_management(config)
+    else:
+        main()
