@@ -6,7 +6,6 @@ import re
 import os
 from datetime import datetime, date, timedelta
 from io import BytesIO
-import yaml
 import streamlit_authenticator as stauth
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -23,7 +22,7 @@ st.set_page_config(
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
 DB_PATH = "ca_practice.db"
-AUTH_YAML = "users.yaml"
+AUTH_YAML = "users.json"
 
 INDIAN_STATES = [
     "Andaman and Nicobar Islands", "Andhra Pradesh", "Arunachal Pradesh",
@@ -1733,13 +1732,13 @@ def init_users_yaml():
             },
         }
         with open(AUTH_YAML, "w") as f:
-            yaml.dump(default_config, f, default_flow_style=False, allow_unicode=True)
+            json.dump(default_config, f, indent=2)
 
 
 def load_authenticator():
     """Load authenticator from users.yaml."""
     with open(AUTH_YAML, "r") as f:
-        config = yaml.safe_load(f)
+        config = json.load(f)
     authenticator = stauth.Authenticate(
         config["credentials"],
         config["cookie"]["name"],
@@ -1753,7 +1752,7 @@ def load_authenticator():
 def save_credentials(config: dict):
     """Write updated credentials back to users.yaml."""
     with open(AUTH_YAML, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+        json.dump(config, f, indent=2)
 
 
 def inject_login_css():
